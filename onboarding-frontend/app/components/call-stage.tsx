@@ -12,7 +12,7 @@ type TranscriptLine = {
 type CallStageProps = {
   sessionId: string;
   leave: boolean;
-  onCollected: (collected: Collected, graduated: boolean) => void;
+  onCollected: (collected: Collected, graduated: boolean, pendingGmail: string | null) => void;
   onEnded: (message: string | null) => void;
 };
 
@@ -161,6 +161,7 @@ export function CallStage({ sessionId, leave, onCollected, onEnded }: CallStageP
         text?: string;
         partial?: boolean;
         collected?: Collected;
+        pending_gmail?: string | null;
         graduated?: boolean;
         message?: string | null;
       };
@@ -189,7 +190,7 @@ export function CallStage({ sessionId, leave, onCollected, onEnded }: CallStageP
           return [...current, { role, text, open: partial }];
         });
       } else if (data.type === "collected" && data.collected) {
-        onCollectedRef.current(data.collected, Boolean(data.graduated));
+        onCollectedRef.current(data.collected, Boolean(data.graduated), data.pending_gmail ?? null);
       } else if (data.type === "ended") {
         if (endedRef.current) return;
         endedRef.current = true;
@@ -283,16 +284,15 @@ export function CallStage({ sessionId, leave, onCollected, onEnded }: CallStageP
           <p className="text-center text-sm text-muted">Listening…</p>
         ) : (
           lines.map((line, index) => (
-            <p
+            <div
               key={`${line.role}-${index}`}
-              className={`w-fit max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-5 break-words ${
-                line.role === "user"
-                  ? "ml-auto bg-accent/15 text-ink"
-                  : "border border-line bg-surface text-ink"
-              }`}
+              className={`flex w-fit max-w-[85%] flex-col gap-1 ${line.role === "user" ? "ml-auto items-end" : ""}`}
             >
-              {line.text}
-            </p>
+              {index === 0 ? <span className="px-1 text-[11px] text-muted">Call</span> : null}
+              <p className="rounded-2xl border border-accent/40 bg-accent/10 px-3 py-2 text-sm leading-5 break-words text-ink">
+                {line.text}
+              </p>
+            </div>
           ))
         )}
       </div>

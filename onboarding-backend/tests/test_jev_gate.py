@@ -1,4 +1,4 @@
-from app.jev_gate import STEER, review_draft
+from app.jev_gate import STEER, ending_call, review_draft
 from app.profile import Profile
 
 
@@ -62,6 +62,7 @@ def test_one_rewrite_uses_the_same_call_for_checks_and_next_info():
     }
     assert seen[0][0] == STEER
     assert "help_with" in "\n".join(seen[0])
+    assert "inbox" in "\n".join(seen[0])
     assert len(client.calls) == 2
     assert client.calls[1]["state"]["draft"] == "rewritten"
     assert result.text == "rewritten"
@@ -92,6 +93,56 @@ def test_a_failed_rewrite_does_not_call_jev_a_third_time():
     assert result.failed == ["one_ask"]
 
 
+def test_text_agent_name_sets_context():
+    client = FakeJev([
+        _Response("agent_name", asked_chosen=0.1),
+        _Response("agent_name"),
+    ])
+    seen = []
+
+    async def rewrite(draft, feedback):
+        seen.append(feedback)
+        return "You get to name me. What should I go by?"
+
+    _run(review_draft(
+        client,
+        draft="What nickname do you want?",
+        history=[],
+        profile=Profile(),
+        channel="text",
+        rewrite=rewrite,
+    ))
+    feedback = "\n".join(seen[0])
+    assert "name you, the assistant" in feedback
+    assert "Not a nickname for them." in feedback
+
+
+def test_a_stored_email_is_not_asked_for_again():
+    profile = Profile(gmail="fat@gmail.com")
+    client = FakeJev([
+        _Response("gmail", asked_chosen=0.1),
+        _Response("none"),
+    ])
+    seen = []
+
+    async def rewrite(draft, feedback):
+        seen.append(feedback)
+        return "What's your name?"
+
+    result = _run(review_draft(
+        client,
+        draft="What's your email?",
+        history=[],
+        profile=profile,
+        channel="voice",
+        rewrite=rewrite,
+    ))
+    assert client.calls[0]["state"]["collected"]["gmail"] == "fat@gmail.com"
+    assert "gmail" not in client.calls[0]["state"]["missing"]
+    assert "Ask only for none" in "\n".join(seen[0])
+    assert result.next_info == "none"
+
+
 def test_voice_agent_name_choice_steers_with_none():
     client = FakeJev([
         _Response("agent_name", asked_chosen=0.1),
@@ -114,6 +165,22 @@ def test_voice_agent_name_choice_steers_with_none():
     assert seen[0][-1] == "Ask only for none. If it is none, ask for nothing new."
     assert "agent_name" not in "\n".join(seen[0])
     assert result.next_info == "none"
+
+
+def test_ending_the_call_is_one_noul_on_the_spoken_line():
+    client = FakeJev([_Response("none", ending_call=0.1)])
+    ended = _run(ending_call(
+        client,
+        "What do you want help with?",
+        [{"role": "user", "text": "calendar"}],
+        Profile(user_name="Fett", help_with="calendar"),
+    ))
+    assert ended is False
+    assert set(client.calls[0]["questions"]) == {"ending_call"}
+    assert client.calls[0]["state"]["draft"] == "What do you want help with?"
+    assert client.calls[0]["state"]["channel"] == "voice"
+    client = FakeJev([_Response("none", ending_call=0.9)])
+    assert _run(ending_call(client, "Talk soon.", [], Profile())) is True
 
 
 def _run(awaitable):

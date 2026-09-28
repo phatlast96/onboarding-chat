@@ -2,14 +2,15 @@ from dataclasses import dataclass
 
 from typesafe_sdk import Choice, Noul
 
-from app.profile import Channel, Profile, collected, missing_fields
+from app.profile import HELP_EXAMPLES, Channel, Profile, collected, missing_fields, pending_gmail
 
 PASS_AT = 0.5
 
 STEER = (
     "Onboarding exists to show how we can help them. "
+    "Before you ask for anything, say why that detail lets you help. "
     "If they already know what they need, let them graduate into the main experience. "
-    "If a detail is still required, bring them back to it gently, without a lecture and without stacking questions."
+    "If a detail is still required, bring them back to it gently, one reason and one question, without a lecture."
 )
 
 ASK = "Ask only for {next_info}. If it is none, ask for nothing new."
@@ -74,14 +75,17 @@ QUESTIONS = {
             "Which single piece of information is the appropriate one to ask for next? "
             "Choose the fact this conversation makes natural, not the next blank on a form. "
             "On a voice call, do not choose agent_name. "
-            "Do not choose agent_name to open the chat. That nickname is a later joke, after you already know something about them. "
+            "In text, choose agent_name whenever the conversation makes that nickname natural. "
+            "It does not have to wait until the end, and it still has to be asked. "
+            "Only choose a fact that is listed in missing. "
+            "If an email address is already stored, gmail is not missing, even before they tap Connect. Do not choose gmail then. "
             "Choose none when they should graduate or nothing required is still open."
         ),
         criteria={
-            "agent_name": "A nickname for the assistant. A later text-only joke, not the first question.",
+            "agent_name": "A nickname they invent for the assistant. Any point in the text chat where it fits.",
             "user_name": "What to call the user.",
-            "gmail": "A Gmail account they still need to connect.",
-            "help_with": "Something they want help with.",
+            "gmail": "An email address that is not stored yet. Not the Connect button, and not an address already heard.",
+            "help_with": "Something they want help with. The ask should include a couple of everyday examples.",
             "none": "Ask for nothing on this turn.",
         },
     ),
@@ -96,11 +100,19 @@ class GateResult:
     rewrote: bool
 
 
+def _judge_collected(profile: Profile) -> dict:
+    known = collected(profile)
+    waiting = pending_gmail(profile)
+    if known["gmail"] is None and waiting:
+        known = {**known, "gmail": waiting}
+    return known
+
+
 def _state(draft: str, history: list[dict], profile: Profile, channel: Channel) -> dict:
     return {
         "history": history,
         "draft": draft,
-        "collected": collected(profile),
+        "collected": _judge_collected(profile),
         "missing": sorted(missing_fields(profile, channel)),
         "channel": channel,
     }
@@ -119,7 +131,12 @@ def _lines(failed: list[str], next_info: str, profile: Profile, channel: Channel
         lines.append(FEEDBACK[name].format(missing=missing, next_info=next_info))
     lines.append(ASK.format(next_info=next_info))
     if next_info == "agent_name":
-        lines.append("That is a nickname they invent for you, as a small joke. Not a nickname for them.")
+        lines.append(
+            "Set the context before the question: they get to name you, the assistant, as a small joke. "
+            "Not a nickname for them."
+        )
+    if next_info == "help_with":
+        lines.append(HELP_EXAMPLES)
     return lines
 
 
@@ -128,6 +145,40 @@ async def _score(client, draft: str, history: list[dict], profile: Profile, chan
     label = _label(response.choices["next_info"].choice, profile, channel)
     failed = [name for name in NOUL_ORDER if response.nouls[name].noul < PASS_AT]
     return label, failed
+
+
+ACCEPTED_CALL = _noul(
+    "The assistant asked permission to call. Did the latest user message agree to the call?",
+    "They agreed to be called.",
+    "They declined, changed the subject, or only answered something else.",
+)
+
+
+ENDING_CALL = _noul(
+    "Is the assistant ending the call?",
+    "They are signing off or telling the user the call is over.",
+    "They are still talking, asking something, or waiting for an answer.",
+)
+
+
+async def ending_call(client, text: str, history: list[dict], profile: Profile) -> bool:
+    response = await client.system_one(
+        _state(text, history, profile, "voice"),
+        {"ending_call": ENDING_CALL},
+    )
+    return response.nouls["ending_call"].noul >= PASS_AT
+
+
+async def accepted_call(client, user_text: str, assistant_text: str, profile: Profile) -> bool:
+    history = []
+    if assistant_text.strip():
+        history.append({"role": "assistant", "text": assistant_text})
+    history.append({"role": "user", "text": user_text})
+    response = await client.system_one(
+        _state(user_text, history, profile, "text"),
+        {"accepted_call": ACCEPTED_CALL},
+    )
+    return response.nouls["accepted_call"].noul >= PASS_AT
 
 
 async def review_draft(

@@ -1,11 +1,29 @@
 "use client";
 
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { createSession, sendMessage, type Collected, type SessionView } from "../lib/api";
+import {
+  connectGmail,
+  createSession,
+  declineCall,
+  getSession,
+  sendMessage,
+  type ChatMessage,
+  type Collected,
+  type SessionView,
+} from "../lib/api";
 import { CallStage, primeCallAudio } from "./call-stage";
 import { CollectedPanel } from "./collected-panel";
 
 type Mode = "text" | "call";
+
+function bubbleLabel(messages: ChatMessage[], index: number): string | null {
+  const channel = messages[index]?.channel === "call" ? "call" : "text";
+  const previous = messages[index - 1];
+  if (!previous) return channel === "call" ? "Call" : null;
+  const previousChannel = previous.channel === "call" ? "call" : "text";
+  if (previousChannel === channel) return null;
+  return channel === "call" ? "Call" : "Chat";
+}
 
 export function OnboardingConsole() {
   const [session, setSession] = useState<SessionView | null>(null);
@@ -14,12 +32,19 @@ export function OnboardingConsole() {
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [linking, setLinking] = useState(false);
+  const [incoming, setIncoming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const callSessionId = useRef<string | null>(null);
+  const offeredByBot = useRef(false);
   const collected = session?.collected;
   const graduated = Boolean(session?.graduated);
-  const early = graduated && collected != null && Object.values(collected).some((value) => !value);
+  const early =
+    graduated &&
+    collected != null &&
+    ((["agent_name", "user_name", "gmail", "help_with"] as const).some((key) => !collected[key]) ||
+      !collected.gmail_connected);
 
   useEffect(() => {
     let cancel = false;
@@ -40,40 +65,68 @@ export function OnboardingConsole() {
   useEffect(() => {
     const node = scroller.current;
     if (node) node.scrollTop = node.scrollHeight;
-  }, [session?.messages.length, pending, busy, mode]);
+  }, [session?.messages.length, pending, busy, mode, incoming]);
 
-  function choose(next: Mode) {
-    if (next === mode || !session) return;
-    if (next === "call") {
-      primeCallAudio();
-      callSessionId.current = session.id;
-      setLeaveCall(false);
-      setMode("call");
-      return;
-    }
-    setLeaveCall(true);
+  function beginCall(id: string) {
+    primeCallAudio();
+    callSessionId.current = id;
+    setIncoming(false);
+    setLeaveCall(false);
+    setMode("call");
   }
 
-  function handleEnded(message: string | null) {
+  function choose(next: Mode) {
+    if (!session) return;
+    if (next === "call") {
+      if (mode === "call") return;
+      setIncoming(true);
+      return;
+    }
+    if (mode === "call") {
+      setLeaveCall(true);
+      return;
+    }
+    if (incoming) void decline();
+  }
+
+  function pickup() {
+    if (!session) return;
+    offeredByBot.current = false;
+    beginCall(session.id);
+  }
+
+  async function handleEnded(message: string | null) {
     const id = callSessionId.current;
     callSessionId.current = null;
     setLeaveCall(false);
     setMode("text");
-    if (!message || !id) return;
-    setSession((current) =>
-      current && current.id === id
-        ? {
-            ...current,
-            messages: [...current.messages, { role: "assistant", text: message }],
-          }
-        : current,
-    );
+    if (!id) return;
+    try {
+      const next = await getSession(id);
+      setSession(next);
+      if (next.ringing) {
+        offeredByBot.current = true;
+        setIncoming(true);
+      }
+    } catch {
+      if (!message) return;
+      setSession((current) =>
+        current && current.id === id
+          ? {
+              ...current,
+              messages: [...current.messages, { role: "assistant", text: message, channel: "text" }],
+            }
+          : current,
+      );
+    }
   }
 
-  function handleCollected(next: Collected, nextGraduated: boolean) {
+  function handleCollected(next: Collected, nextGraduated: boolean, pendingGmail: string | null) {
     const id = callSessionId.current;
     setSession((current) =>
-      current && current.id === id ? { ...current, collected: next, graduated: nextGraduated } : current,
+      current && current.id === id
+        ? { ...current, collected: next, pending_gmail: pendingGmail, graduated: nextGraduated }
+        : current,
     );
   }
 
@@ -81,35 +134,42 @@ export function OnboardingConsole() {
     event.preventDefault();
     const text = draft.trim();
     if (!text || !session || busy) return;
+    const id = session.id;
+    setIncoming(false);
     setBusy(true);
     setDraft("");
     setPending(text);
     setError(null);
     try {
-      const turn = await sendMessage(session.id, text);
+      const turn = await sendMessage(id, text);
       setSession((current) =>
-        current && current.id === session.id
+        current && current.id === id
           ? {
               ...current,
               collected: turn.collected,
+              pending_gmail: turn.pending_gmail,
               graduated: turn.graduated,
               messages: [
                 ...current.messages,
-                { role: "user", text },
-                { role: "assistant", text: turn.message },
+                { role: "user", text, channel: "text" },
+                { role: "assistant", text: turn.message, channel: "text" },
               ],
             }
           : current,
       );
+      if (turn.place_call) {
+        offeredByBot.current = true;
+        setIncoming(true);
+      }
     } catch {
       setSession((current) =>
-        current && current.id === session.id
+        current && current.id === id
           ? {
               ...current,
               messages: [
                 ...current.messages,
-                { role: "user", text },
-                { role: "assistant", text: "I missed that. Say it once more?" },
+                { role: "user", text, channel: "text" },
+                { role: "assistant", text: "I missed that. Say it once more?", channel: "text" },
               ],
             }
           : current,
@@ -120,8 +180,52 @@ export function OnboardingConsole() {
     }
   }
 
+  async function decline() {
+    const fromBot = offeredByBot.current;
+    offeredByBot.current = false;
+    setIncoming(false);
+    if (!fromBot || !session || busy) return;
+    const id = session.id;
+    setBusy(true);
+    setError(null);
+    try {
+      const turn = await declineCall(id);
+      setSession((current) =>
+        current && current.id === id
+          ? {
+              ...current,
+              collected: turn.collected,
+              pending_gmail: turn.pending_gmail,
+              graduated: turn.graduated,
+              ringing: turn.ringing,
+              messages: [...current.messages, { role: "assistant", text: turn.message, channel: "text" }],
+            }
+          : current,
+      );
+    } catch {
+      setError("Couldn't stay in chat.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function linkGmail() {
+    if (!session || linking) return;
+    setLinking(true);
+    setError(null);
+    try {
+      setSession(await connectGmail(session.id));
+    } catch {
+      setError("Couldn't connect Gmail.");
+    } finally {
+      setLinking(false);
+    }
+  }
+
   async function reset() {
+    offeredByBot.current = false;
     callSessionId.current = null;
+    setIncoming(false);
     setLeaveCall(false);
     setMode("text");
     setDraft("");
@@ -138,9 +242,13 @@ export function OnboardingConsole() {
   }
 
   const showComposer = mode === "text" && !graduated;
+  const showConnect = Boolean(session?.pending_gmail && mode === "text");
+  const showIncoming = incoming && mode === "text";
   const onCall = mode === "call" && session != null;
 
-  const showFooter = Boolean((error && session) || (graduated && mode === "text") || showComposer);
+  const showFooter = Boolean(
+    (error && session) || (graduated && mode === "text") || showComposer || showConnect || showIncoming,
+  );
 
   return (
     <div className="flex h-full flex-col bg-background text-ink">
@@ -150,21 +258,21 @@ export function OnboardingConsole() {
           <div role="group" aria-label="Channel" className="flex rounded-full border border-line bg-surface p-1">
             <button
               type="button"
-              aria-pressed={mode === "text"}
+              aria-pressed={mode === "text" && !incoming}
               onClick={() => choose("text")}
               className={`h-11 rounded-full px-3 text-sm transition-colors duration-150 ${
-                mode === "text" ? "bg-accent text-background" : "text-muted"
+                mode === "text" && !incoming ? "bg-accent text-background" : "text-muted"
               }`}
             >
               Chat
             </button>
             <button
               type="button"
-              aria-pressed={mode === "call"}
+              aria-pressed={mode === "call" || incoming}
               onClick={() => choose("call")}
               disabled={!session}
               className={`h-11 rounded-full px-3 text-sm transition-colors duration-150 disabled:opacity-40 ${
-                mode === "call" ? "bg-accent text-background" : "text-muted"
+                mode === "call" || incoming ? "bg-accent text-background" : "text-muted"
               }`}
             >
               Call
@@ -212,7 +320,7 @@ export function OnboardingConsole() {
                 ) : null}
                 {session && session.messages.length === 0 && !pending ? (
                   <div className="flex flex-col items-start gap-3">
-                    <p className="text-sm leading-5">Say hello, or place a call.</p>
+                    <p className="text-sm leading-5">Say hello.</p>
                     <p className="max-w-sm text-sm leading-5 text-muted">
                       Hang up, refuse, or jump ahead. Chat picks up whatever the call didn&apos;t finish.
                     </p>
@@ -225,18 +333,30 @@ export function OnboardingConsole() {
                     </button>
                   </div>
                 ) : null}
-                {session?.messages.map((message, index) => (
-                  <p
-                    key={`${message.role}-${index}`}
-                    className={`w-fit max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-5 break-words whitespace-pre-wrap ${
-                      message.role === "user"
-                        ? "ml-auto bg-accent/15 text-ink"
-                        : "border border-line bg-surface text-ink"
-                    }`}
-                  >
-                    {message.text}
-                  </p>
-                ))}
+                {session?.messages.map((message, index) => {
+                  const call = message.channel === "call";
+                  const mine = message.role === "user";
+                  const label = bubbleLabel(session.messages, index);
+                  return (
+                    <div
+                      key={`${message.channel ?? "text"}-${message.role}-${index}`}
+                      className={`flex w-fit max-w-[85%] flex-col gap-1 ${mine ? "ml-auto items-end" : ""}`}
+                    >
+                      {label ? <span className="px-1 text-[11px] text-muted">{label}</span> : null}
+                      <p
+                        className={`rounded-2xl px-3 py-2 text-sm leading-5 break-words whitespace-pre-wrap ${
+                          call
+                            ? "border border-accent/40 bg-accent/10 text-ink"
+                            : mine
+                              ? "bg-accent/15 text-ink"
+                              : "border border-line bg-surface text-ink"
+                        }`}
+                      >
+                        {message.text}
+                      </p>
+                    </div>
+                  );
+                })}
                 {pending ? (
                   <p className="ml-auto w-fit max-w-[85%] rounded-2xl bg-accent/15 px-3 py-2 text-sm leading-5 break-words text-ink">
                     {pending}
@@ -266,6 +386,39 @@ export function OnboardingConsole() {
                   ) : null}
                 </div>
               ) : null}
+              {showIncoming ? (
+                <div className="mb-2 rounded-2xl border border-accent/40 bg-accent/10 px-4 py-3">
+                  <p className="text-sm">Incoming call</p>
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={pickup}
+                      className="h-11 flex-1 rounded-full bg-accent text-sm text-background"
+                    >
+                      Pick up
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void decline()}
+                      disabled={busy}
+                      className="h-11 flex-1 rounded-full border border-line bg-surface text-sm disabled:opacity-40"
+                    >
+                      Don&apos;t pick up
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+              {showConnect ? (
+                <button
+                  type="button"
+                  onClick={() => void linkGmail()}
+                  disabled={linking}
+                  className="mb-2 flex min-h-14 w-full flex-col items-center justify-center rounded-2xl bg-accent px-4 py-3 text-background transition-colors duration-150 disabled:opacity-40"
+                >
+                  <span className="text-sm font-medium">Connect Gmail</span>
+                  <span className="max-w-full truncate text-xs opacity-80">{session?.pending_gmail}</span>
+                </button>
+              ) : null}
               {showComposer ? (
                 <form onSubmit={(event) => void send(event)} className="flex items-center gap-2">
                   <input
@@ -293,7 +446,11 @@ export function OnboardingConsole() {
         </section>
         <aside className="overflow-y-auto border-l border-line px-4 py-4">
           {session ? (
-            <CollectedPanel collected={session.collected} graduated={graduated} />
+            <CollectedPanel
+              collected={session.collected}
+              graduated={graduated}
+              pendingGmail={session.pending_gmail}
+            />
           ) : (
             <p className="text-sm text-muted">Starting a session…</p>
           )}
