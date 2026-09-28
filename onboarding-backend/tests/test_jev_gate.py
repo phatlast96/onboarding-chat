@@ -167,6 +167,41 @@ def test_voice_agent_name_choice_steers_with_none():
     assert result.next_info == "none"
 
 
+def test_a_long_chat_with_open_facts_is_the_same_call():
+    client = FakeJev([
+        _Response("gmail", too_long=0.1),
+        _Response("gmail"),
+    ])
+    seen = []
+
+    async def rewrite(draft, feedback):
+        seen.append(feedback)
+        return "What's the email I should use?"
+
+    result = _run(review_draft(
+        client,
+        draft="Glad to hear it. Anything else on your mind?",
+        history=[
+            {"role": "user", "text": "hey"},
+            {"role": "assistant", "text": "I'm a personal assistant. What should I call you?"},
+            {"role": "user", "text": "Pat"},
+            {"role": "assistant", "text": "Nice to meet you. How's your day?"},
+            {"role": "user", "text": "fine, just chatting"},
+        ],
+        profile=Profile(user_name="Pat"),
+        channel="text",
+        rewrite=rewrite,
+    ))
+    assert "too_long" in client.calls[0]["questions"]
+    assert "next_info" in client.calls[0]["questions"]
+    feedback = "\n".join(seen[0])
+    assert "since you last asked" in feedback
+    assert "gmail" in feedback
+    assert len(client.calls) == 2
+    assert result.rewrote is True
+    assert result.failed == []
+
+
 def test_connect_button_is_the_same_call_as_the_other_checks():
     client = FakeJev([
         _Response("none", connect_button=0.1),

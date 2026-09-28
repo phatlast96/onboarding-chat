@@ -1,9 +1,13 @@
 import asyncio
+import json
+
+from websockets.exceptions import ConnectionClosedError
 
 from app.live_bridge import (
     HANGUP_NOTE,
     SegmentBuffer,
     _prior_input,
+    _pump,
     ended_note,
     finish_call,
     follow_up,
@@ -152,3 +156,72 @@ def test_hangup_always_asks_the_text_model_to_continue():
     assert payload["message"] == "Good talking. You're set."
     assert session.messages[-2]["channel"] == "call"
     assert session.messages[-1]["channel"] == "text"
+
+
+def test_a_dropped_upstream_does_not_crash_the_call(monkeypatch):
+    saw_cancel = asyncio.Event()
+    real_sleep = asyncio.sleep
+
+    async def sleep(seconds):
+        if seconds == 0.05:
+            try:
+                await real_sleep(seconds)
+            except asyncio.CancelledError:
+                saw_cancel.set()
+                raise
+            return
+        await real_sleep(seconds)
+
+    monkeypatch.setattr("app.live_bridge.asyncio.sleep", sleep)
+
+    class Upstream:
+        def __init__(self):
+            self.events = asyncio.Queue()
+            self.dead = False
+
+        async def send(self, raw):
+            payload = json.loads(raw)
+            if self.dead and payload.get("type") == "session.input_audio.append":
+                raise ConnectionClosedError(None, None)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            item = await self.events.get()
+            if item is None:
+                self.dead = True
+                raise StopAsyncIteration
+            return item
+
+    class Browser:
+        def __init__(self):
+            self.waiting = asyncio.Event()
+            self.release = asyncio.Event()
+            self.sent = False
+
+        async def receive_json(self):
+            if self.sent:
+                await asyncio.Future()
+            self.waiting.set()
+            await self.release.wait()
+            self.sent = True
+            return {"type": "audio", "pcm16_base64": "aaaa"}
+
+        async def send_json(self, payload):
+            return
+
+    async def scenario():
+        session = create_session()
+        upstream = Upstream()
+        browser = Browser()
+        pump = asyncio.create_task(_pump(browser, session, upstream, [], {"text": HANGUP_NOTE}))
+        await browser.waiting.wait()
+        await upstream.events.put(json.dumps({"type": "session.started"}))
+        await asyncio.sleep(0)
+        await upstream.events.put(None)
+        await asyncio.wait_for(saw_cancel.wait(), 1)
+        browser.release.set()
+        await asyncio.wait_for(pump, 1)
+
+    asyncio.run(scenario())

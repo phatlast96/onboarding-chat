@@ -6,6 +6,7 @@ import time
 
 import websockets
 from fastapi import WebSocketDisconnect
+from websockets.exceptions import ConnectionClosed
 
 from app import text_agent
 from app.jev_gate import ending_call
@@ -338,10 +339,14 @@ async def _pump(websocket, session, upstream, spoken: list[dict], end_note: dict
                 if not started.is_set():
                     early.append(message["pcm16_base64"])
                 else:
-                    await send_upstream({
-                        "type": "session.input_audio.append",
-                        "audio": message["pcm16_base64"],
-                    })
+                    try:
+                        await send_upstream({
+                            "type": "session.input_audio.append",
+                            "audio": message["pcm16_base64"],
+                        })
+                    except ConnectionClosed:
+                        _log.warning("voice upstream closed")
+                        return
 
     async def read_upstream() -> None:
         nonlocal caller, greeted, user_at, heard_goodbye

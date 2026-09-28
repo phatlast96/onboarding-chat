@@ -27,6 +27,7 @@ CHECKS = (
     "if that fact is what they want help with, include a couple of everyday examples, "
     "and if it is your nickname, set the context that they are naming you, "
     "and do not say you are done while a required fact is still open. "
+    "If the chat has run on since you last asked for a fact that is still open, ask for it again. "
     "If nothing should be asked, ask for nothing new."
 )
 
