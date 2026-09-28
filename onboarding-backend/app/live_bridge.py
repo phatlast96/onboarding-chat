@@ -139,10 +139,9 @@ async def _pump(websocket, session, upstream) -> None:
     started = asyncio.Event()
     early: list[str] = []
     caller = ""
+    user_at: float | None = None
     voice_history: list[dict] = []
     event_ids = iter(range(1, 100000))
-    gate = {"gen": 0}
-    holding = {"active": False}
     closed = False
     heard = asyncio.Event()
     greeted = False
@@ -160,10 +159,20 @@ async def _pump(websocket, session, upstream) -> None:
         except Exception:
             return
 
-    async def play(chunks: list[str], text: str) -> None:
-        for chunk in chunks:
-            await _send_browser(websocket, {"type": "audio", "pcm16_base64": chunk})
-        await _send_browser(websocket, {"type": "transcript", "role": "assistant", "text": text})
+    async def remember_user(text: str) -> None:
+        spoken = text.strip()
+        if not spoken:
+            return
+        voice_history.append({"role": "user", "text": spoken})
+        try:
+            await extract_slots(openai_client, spoken, session.profile, voice_history)
+        except Exception:
+            return
+        await _send_browser(websocket, {
+            "type": "collected",
+            "collected": collected(session.profile),
+            "graduated": session.profile.graduated,
+        })
 
     async def read_browser() -> None:
         while not stop.is_set():
@@ -186,7 +195,7 @@ async def _pump(websocket, session, upstream) -> None:
                     })
 
     async def read_upstream() -> None:
-        nonlocal caller, greeted
+        nonlocal caller, greeted, user_at
         async for raw in upstream:
             if stop.is_set():
                 return
@@ -202,23 +211,50 @@ async def _pump(websocket, session, upstream) -> None:
                 for chunk in queued:
                     await send_upstream({"type": "session.input_audio.append", "audio": chunk})
             elif kind == "session.output_audio.delta":
-                assistant.push_audio(event.get("delta") or "")
+                delta = event.get("delta") or ""
+                if delta:
+                    await _send_browser(websocket, {"type": "audio", "pcm16_base64": delta})
             elif kind == "session.output_transcript.delta":
-                assistant.push_transcript(event.get("delta") or "", time.monotonic())
+                delta = event.get("delta") or ""
+                if not delta:
+                    continue
+                assistant.push_transcript(delta, time.monotonic())
+                await _send_browser(websocket, {
+                    "type": "transcript",
+                    "role": "assistant",
+                    "text": delta,
+                    "partial": True,
+                })
             elif kind == "session.input_transcript.delta":
-                caller += event.get("delta") or ""
-                if assistant.audio or holding["active"]:
-                    assistant.drop()
-                    gate["gen"] += 1
-                    await _send_browser(websocket, {"type": "drop"})
+                delta = event.get("delta") or ""
+                if not delta:
+                    continue
+                caller += delta
+                user_at = time.monotonic()
+                await _send_browser(websocket, {
+                    "type": "transcript",
+                    "role": "user",
+                    "text": delta,
+                    "partial": True,
+                })
             elif kind == "session.closed":
                 return
 
     async def close_segments() -> None:
+        nonlocal caller, user_at
         while not stop.is_set():
             await asyncio.sleep(0.05)
-            if assistant.ready(time.monotonic()):
-                await segments.put(assistant.take())
+            now = time.monotonic()
+            if user_at is not None and caller.strip() and now - user_at >= SILENCE_S:
+                text = caller
+                caller = ""
+                user_at = None
+                await _send_browser(websocket, {"type": "transcript", "role": "user", "partial": False})
+                await remember_user(text)
+            if assistant.ready(now):
+                _audio, text = assistant.take()
+                await _send_browser(websocket, {"type": "transcript", "role": "assistant", "partial": False})
+                await segments.put(text)
 
     async def keep_quiet() -> None:
         while not stop.is_set() and not heard.is_set():
@@ -232,24 +268,17 @@ async def _pump(websocket, session, upstream) -> None:
         await stop.wait()
 
     async def review_segments() -> None:
-        nonlocal caller
         while not stop.is_set():
-            audio, text = await segments.get()
-            gen = gate["gen"]
-            held = {"audio": audio, "gen": gen}
-            holding["active"] = True
+            text = await segments.get()
 
             async def rewrite(draft: str, feedback: list[str]) -> str:
                 await send_upstream(
                     _instruction_event("\n".join(feedback), f"event_{next(event_ids)}")
                 )
-                nxt_audio, nxt_text = await segments.get()
-                held["audio"] = nxt_audio
-                held["gen"] = gate["gen"]
-                return nxt_text
+                return draft
 
             try:
-                result = await review_draft(
+                await review_draft(
                     jev_client,
                     draft=text,
                     history=[*session.messages, *voice_history],
@@ -258,18 +287,9 @@ async def _pump(websocket, session, upstream) -> None:
                     rewrite=rewrite,
                 )
             except Exception:
-                holding["active"] = False
+                voice_history.append({"role": "assistant", "text": text})
                 continue
-
-            spoken = held["audio"] if result.rewrote else audio
-            spoken_gen = held["gen"] if result.rewrote else gen
-            if gate["gen"] == spoken_gen:
-                await play(spoken, result.text)
-                voice_history.append({"role": "assistant", "text": result.text})
-            holding["active"] = False
-            pending = caller
-            caller = ""
-            await _extract_caller(websocket, session, voice_history, pending)
+            voice_history.append({"role": "assistant", "text": text})
 
     await send_upstream(_start_event(session.profile))
     browser_task = asyncio.create_task(read_browser())
@@ -292,7 +312,8 @@ async def _pump(websocket, session, upstream) -> None:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        await _extract_caller(websocket, session, voice_history, caller)
+        if caller.strip():
+            await remember_user(caller)
         await close_upstream()
 
 
@@ -313,19 +334,3 @@ async def _send_browser(websocket, payload: dict) -> None:
         return
 
 
-async def _extract_caller(websocket, session, voice_history: list[dict], caller: str) -> None:
-    text = caller.strip()
-    if not text:
-        return
-    voice_history.append({"role": "user", "text": text})
-    try:
-        await extract_slots(openai_client, text, session.profile, voice_history)
-    except Exception:
-        await _send_browser(websocket, {"type": "transcript", "role": "user", "text": text})
-        return
-    await _send_browser(websocket, {"type": "transcript", "role": "user", "text": text})
-    await _send_browser(websocket, {
-        "type": "collected",
-        "collected": collected(session.profile),
-        "graduated": session.profile.graduated,
-    })
