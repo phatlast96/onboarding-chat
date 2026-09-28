@@ -210,8 +210,9 @@ export function OnboardingConsole() {
   }
 
   async function linkGmail() {
-    if (!session || linking) return;
+    if (!session || linking || busy) return;
     setLinking(true);
+    setBusy(true);
     setError(null);
     try {
       setSession(await connectGmail(session.id));
@@ -219,6 +220,7 @@ export function OnboardingConsole() {
       setError("Couldn't connect Gmail.");
     } finally {
       setLinking(false);
+      setBusy(false);
     }
   }
 

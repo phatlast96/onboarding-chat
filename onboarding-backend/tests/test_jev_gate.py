@@ -195,7 +195,8 @@ def test_a_long_chat_with_open_facts_is_the_same_call():
     assert "too_long" in client.calls[0]["questions"]
     assert "next_info" in client.calls[0]["questions"]
     feedback = "\n".join(seen[0])
-    assert "since you last asked" in feedback
+    assert "since you last asked a required question" in feedback
+    assert "already got" in feedback
     assert "gmail" in feedback
     assert len(client.calls) == 2
     assert result.rewrote is True

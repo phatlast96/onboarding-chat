@@ -27,7 +27,7 @@ CHECKS = (
     "if that fact is what they want help with, include a couple of everyday examples, "
     "and if it is your nickname, set the context that they are naming you, "
     "and do not say you are done while a required fact is still open. "
-    "If the chat has run on since you last asked for a fact that is still open, ask for it again. "
+    "If the chat has run on since you last asked any required question, even one you already got, ask for a fact that is still open. "
     "If nothing should be asked, ask for nothing new."
 )
 
@@ -92,6 +92,10 @@ START_CALL = {
     },
 }
 DECLINE_NOTE = "The user didn't pick up the phone call. Continue in this chat. Do not start a call in this reply."
+CONNECT_NOTE = (
+    "The user tapped Connect Gmail. That address is connected. "
+    "Acknowledge it in one sentence, then continue. Do not ask them to tap it again."
+)
 
 
 def _field(item, name: str):
@@ -143,13 +147,13 @@ def _last_assistant(session: Session) -> str:
 
 
 def _opening(session: Session, note: str | None) -> bool:
-    if session.had_call or (note and ("didn't pick up" in note or "hung up" in note)):
+    if session.had_call or (note and ("didn't pick up" in note or "hung up" in note or "tapped Connect Gmail" in note)):
         return False
     return _assistant_replies(session) == 0
 
 
 def _second_reply(session: Session, note: str | None) -> bool:
-    if session.had_call or session.call_asked or (note and "didn't pick up" in note):
+    if session.had_call or session.call_asked or (note and ("didn't pick up" in note or "tapped Connect Gmail" in note)):
         return False
     if session.defer_call:
         return True

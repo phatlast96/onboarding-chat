@@ -389,6 +389,19 @@ def test_declining_the_call_continues_in_text(monkeypatch):
 
 def test_connect_gmail_uses_the_address_from_the_call(monkeypatch):
     _env(monkeypatch)
+    seen = {}
+
+    async def turn(session, user_text, note):
+        seen["user_text"] = user_text
+        seen["note"] = note
+        session.messages.append({
+            "role": "assistant",
+            "text": "Gmail is connected.",
+            "channel": "text",
+        })
+        return "Gmail is connected."
+
+    monkeypatch.setattr("app.routers.sessions.run_turn", turn)
     with TestClient(create_app()) as client:
         created = client.post("/sessions").json()
         sessions[created["id"]].profile.gmail = "jess.m@example.com"
@@ -399,6 +412,9 @@ def test_connect_gmail_uses_the_address_from_the_call(monkeypatch):
         connected = client.post(f"/sessions/{created['id']}/gmail")
     assert connected.status_code == 200
     body = connected.json()
+    assert seen["user_text"] is None
+    assert "tapped Connect Gmail" in seen["note"]
+    assert body["messages"][-1]["text"] == "Gmail is connected."
     assert body["collected"]["gmail"] == "jess.m@example.com"
     assert body["collected"]["gmail_connected"] is True
     assert body["pending_gmail"] is None

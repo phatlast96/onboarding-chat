@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
 from app.store import create_session, get_session, snapshot
+from app.text_agent import CONNECT_NOTE, run_turn
 
 router = APIRouter()
 
@@ -19,7 +20,7 @@ def read_session(session_id: str):
 
 
 @router.post("/sessions/{session_id}/gmail")
-def connect_gmail(session_id: str):
+async def connect_gmail(session_id: str):
     session = get_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found.")
@@ -27,4 +28,5 @@ def connect_gmail(session_id: str):
         raise HTTPException(status_code=400, detail="No Gmail address yet.")
     session.profile.gmail_connected = True
     session.profile.declined.discard("gmail")
+    await run_turn(session, None, CONNECT_NOTE)
     return snapshot(session)

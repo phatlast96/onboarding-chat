@@ -33,7 +33,7 @@ FEEDBACK = {
     "one_ask": "You asked for more than one thing.",
     "asked_chosen": "You asked for the wrong thing.",
     "collection_complete": "You handled the ending wrong. Missing: {missing}. Do not say you are done if they are still going along. If {next_info} is none, let them graduate.",
-    "too_long": "Too many turns have passed since you last asked for the missing info: {missing}. Ask only for {next_info}. If {next_info} is none, let them graduate.",
+    "too_long": "Too many turns have passed since you last asked a required question, including one you already got. Still missing: {missing}. Ask only for {next_info}. If {next_info} is none, let them graduate.",
     "connect_button": "You told them to tap Connect Gmail, but no address is stored. If they already gave a full email, set gmail to that address. If they did not, do not mention the button.",
 }
 
@@ -74,9 +74,9 @@ QUESTIONS = {
         "The reply claims it has everything while a required fact is empty, it ends while the user is still cooperating and facts are missing, or it blocks them from starting when they already know what they need.",
     ),
     "too_long": _noul(
-        "Since the last assistant question that asked for a required fact, has the conversation stayed short?",
-        "Nothing required is missing, little has been said since that question, or this reply asks for one fact still in missing.",
-        "A required fact is still missing, the chat has run on since that question, and this reply does not ask for it.",
+        "Find the last assistant question that asked for any required fact, even if that fact was already answered and is no longer missing. Has the conversation stayed short since then?",
+        "Nothing required is missing, that question was recent, or this reply asks for one fact still in missing.",
+        "Something required is still missing, the chat has run on since that question, and this reply does not ask for a missing fact.",
     ),
     "connect_button": _noul(
         "If this reply tells them to tap Connect Gmail, is that address already stored?",
