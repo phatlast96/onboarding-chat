@@ -9,4 +9,5 @@ def test_settings_reads_only_the_two_keys(monkeypatch):
     assert settings.model_dump() == {
         "jev_api_key": "jev-test",
         "openai_api_key": "sk-test",
+        "cors_origins": "http://localhost:3000,http://127.0.0.1:3000",
     }

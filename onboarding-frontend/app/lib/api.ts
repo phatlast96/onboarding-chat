@@ -30,29 +30,39 @@ export type Turn = {
   ringing: boolean;
 };
 
+const DEFAULT_BACKEND_URL = "http://127.0.0.1:8000";
+
+function backendUrl(): string {
+  return (process.env.NEXT_PUBLIC_BACKEND_URL ?? DEFAULT_BACKEND_URL).replace(/\/$/, "");
+}
+
 async function read<T>(response: Response): Promise<T> {
   if (!response.ok) throw new Error(await response.text());
   return response.json() as Promise<T>;
 }
 
 export function createSession(): Promise<SessionView> {
-  return fetch("/backend/sessions", { method: "POST" }).then(read<SessionView>);
+  return fetch(`${backendUrl()}/sessions`, { method: "POST" }).then(read<SessionView>);
 }
 
 export function getSession(id: string): Promise<SessionView> {
-  return fetch(`/backend/sessions/${id}`).then(read<SessionView>);
+  return fetch(`${backendUrl()}/sessions/${id}`).then(read<SessionView>);
 }
 
 export function connectGmail(id: string): Promise<SessionView> {
-  return fetch(`/backend/sessions/${id}/gmail`, { method: "POST" }).then(read<SessionView>);
+  return fetch(`${backendUrl()}/sessions/${id}/gmail`, { method: "POST" }).then(
+    read<SessionView>,
+  );
 }
 
 export function declineCall(id: string): Promise<Turn> {
-  return fetch(`/backend/sessions/${id}/call/decline`, { method: "POST" }).then(read<Turn>);
+  return fetch(`${backendUrl()}/sessions/${id}/call/decline`, { method: "POST" }).then(
+    read<Turn>,
+  );
 }
 
 export function sendMessage(id: string, text: string): Promise<Turn> {
-  return fetch(`/backend/sessions/${id}/messages`, {
+  return fetch(`${backendUrl()}/sessions/${id}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text }),
@@ -60,8 +70,12 @@ export function sendMessage(id: string, text: string): Promise<Turn> {
 }
 
 export function voiceSocketUrl(id: string): string {
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${window.location.hostname}:8000/sessions/${id}/voice`;
+  const url = new URL(backendUrl());
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.pathname = `/sessions/${id}/voice`;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
 }
 
 export function voiceSocket(id: string): WebSocket {

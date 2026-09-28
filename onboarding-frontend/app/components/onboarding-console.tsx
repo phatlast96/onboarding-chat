@@ -253,7 +253,7 @@ export function OnboardingConsole() {
   return (
     <div className="flex h-full flex-col bg-background text-ink">
       <header className="mx-auto flex h-16 w-full max-w-5xl shrink-0 items-center justify-between gap-3 border-b border-line px-4">
-        <p className="min-w-0 truncate text-[15px] font-medium tracking-tight">Persona</p>
+        <p className="min-w-0 truncate text-[15px] font-medium tracking-tight">Onboarding Bot</p>
         <div className="flex shrink-0 items-center gap-1">
           <div role="group" aria-label="Channel" className="flex rounded-full border border-line bg-surface p-1">
             <button
