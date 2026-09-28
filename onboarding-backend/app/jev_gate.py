@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 from typesafe_sdk import Choice, Noul
 
-from app.profile import HELP_EXAMPLES, Channel, Profile, collected, missing_fields, pending_gmail
+from app.profile import HELP_EXAMPLES, Channel, Profile, missing_fields, stored
 
 PASS_AT = 0.5
 
@@ -22,6 +22,7 @@ NOUL_ORDER = (
     "one_ask",
     "asked_chosen",
     "collection_complete",
+    "connect_button",
 )
 
 FEEDBACK = {
@@ -31,6 +32,7 @@ FEEDBACK = {
     "one_ask": "You asked for more than one thing.",
     "asked_chosen": "You asked for the wrong thing.",
     "collection_complete": "You handled the ending wrong. Missing: {missing}. Do not say you are done if they are still going along. If {next_info} is none, let them graduate.",
+    "connect_button": "You told them to tap Connect Gmail, but no address is stored. If they already gave a full email, set gmail to that address. If they did not, do not mention the button.",
 }
 
 
@@ -69,6 +71,11 @@ QUESTIONS = {
         "Required facts are still missing and the reply keeps going with one gentle ask, or the user already knows what they need and the reply lets them graduate, or everything required is present and the reply moves on.",
         "The reply claims it has everything while a required fact is empty, it ends while the user is still cooperating and facts are missing, or it blocks them from starting when they already know what they need.",
     ),
+    "connect_button": _noul(
+        "If this reply tells them to tap Connect Gmail, is that address already stored?",
+        "It does not tell them to tap Connect Gmail, or collected.gmail is the full address they should connect.",
+        "It tells them to tap Connect Gmail while collected.gmail is empty.",
+    ),
     "next_info": Choice(
         instructions=(
             "Read the whole conversation and what is already collected. "
@@ -100,19 +107,11 @@ class GateResult:
     rewrote: bool
 
 
-def _judge_collected(profile: Profile) -> dict:
-    known = collected(profile)
-    waiting = pending_gmail(profile)
-    if known["gmail"] is None and waiting:
-        known = {**known, "gmail": waiting}
-    return known
-
-
 def _state(draft: str, history: list[dict], profile: Profile, channel: Channel) -> dict:
     return {
         "history": history,
         "draft": draft,
-        "collected": _judge_collected(profile),
+        "collected": stored(profile),
         "missing": sorted(missing_fields(profile, channel)),
         "channel": channel,
     }

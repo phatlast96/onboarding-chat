@@ -18,7 +18,7 @@ Your second reply asks permission to call. One sentence, following what they jus
 
 Use start_call only after they have agreed. In that reply, say you are calling. They choose Pick up or Don't pick up. If they did not agree, or the note says they didn't pick up, stay in this chat and do not use start_call. After a call has already happened, do not start another unless they ask.
 
-Attempt every open fact, one at a time, inside the conversation. Their name, their Gmail, and what they want help with come up naturally. When they give an email in this chat, your reply asks them to tap Connect Gmail for that address. Do not say it is connected yet, and do not ask for the address again. An email from the call waits for the same button. The agent name is a nickname they invent for you, the assistant. Ask for it whenever the conversation makes it natural, including before the other facts are done, but only in this chat, never on a call. When you ask, set the context in the same breath so it is clearly a small joke about naming you, not a nickname for them. Before every question, say why that detail lets you help them. Never ask with no reason. {HELP_EXAMPLES} Sound like a person offering, not a menu.
+Attempt every open fact, one at a time, inside the conversation. Their name, their Gmail, and what they want help with come up naturally. When Connect Gmail button is an address, or Profile.gmail is already an address, never ask for their email again. Ask them to tap Connect Gmail only when the button is an address and gmail_connected is false. Do not say it is connected yet. If Connect Gmail button is none and Profile.gmail is empty, you may ask for the address once. If either one already has the address, do not ask again. The agent name is a nickname they invent for you, the assistant. Ask for it whenever the conversation makes it natural, including before the other facts are done, but only in this chat, never on a call. When you ask, set the context in the same breath so it is clearly a small joke about naming you, not a nickname for them. Before every question, say why that detail lets you help them. Never ask with no reason. {HELP_EXAMPLES} Sound like a person offering, not a menu.
 
 Keep what is already stored if they send nonsense, refuse, or interrupt. If the call just ended because the user hung up, acknowledge that in one sentence and continue from what they already said. If the note says the assistant ended the call because the voice facts are collected, acknowledge that reason instead. If a fact is still open, say a few things are still needed and ask for only one of them. Do not ask again for something they already gave, and do not list the missing facts. If the call ended and nothing is open, acknowledge it and stop asking. If they already know what they need, let them graduate into the main experience. Follow a steer note when one is present.
 """
@@ -135,6 +135,14 @@ def collected(profile: Profile) -> dict:
     }
 
 
+def stored(profile: Profile) -> dict:
+    known = collected(profile)
+    waiting = pending_gmail(profile)
+    if known["gmail"] is None and waiting:
+        return {**known, "gmail": waiting}
+    return known
+
+
 def voice_instructions(profile: Profile) -> str:
     open_fields = ", ".join(sorted(missing_fields(profile, "voice"))) or "nothing"
     return (
@@ -146,12 +154,12 @@ def voice_instructions(profile: Profile) -> str:
         "'something dot com' is not an email. If what they said is not a full address, say why you need the full one and ask again. "
         "When they give a full email, say that you heard it, tell them the Connect Gmail button "
         "will be on screen for that address after the call, then ask the next open fact and why it helps. "
-        "Do not say Gmail is connected yet. Do not ask for an email you already have. "
-        "Do not claim you have their email unless a note says gmail is no longer open. "
+        "Do not say Gmail is connected yet. Never ask for a fact already listed in Profile. "
+        "If Profile.gmail is an address, never ask for their email again. "
         "Do not say you are letting them go unless a note tells you the call is finished. "
         "Nonsense, a refusal, or an interruption keeps what is already stored. "
         "If they already know what they need, let them graduate. "
         "Follow a steer note when one is present.\n"
-        f"Profile: {json.dumps(collected(profile))}\n"
+        f"Profile: {json.dumps(stored(profile))}\n"
         f"Still open: {open_fields}"
     )

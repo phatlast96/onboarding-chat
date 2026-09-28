@@ -5,11 +5,18 @@ from app.profile import (
     missing_fields,
     pending_gmail,
     real_address,
+    stored,
 )
 
 
 def test_voice_missing_excludes_agent_name():
     assert missing_fields(Profile(), "voice") == {"user_name", "gmail", "help_with"}
+
+
+def test_a_stored_address_is_visible_before_connect():
+    profile = Profile(gmail="fatatchima@gmail.com", help_with="Making cake")
+    assert collected(profile)["gmail"] is None
+    assert stored(profile)["gmail"] == "fatatchima@gmail.com"
 
 
 def test_a_stored_address_waits_for_the_connect_button():

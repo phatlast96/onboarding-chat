@@ -167,6 +167,32 @@ def test_voice_agent_name_choice_steers_with_none():
     assert result.next_info == "none"
 
 
+def test_connect_button_is_the_same_call_as_the_other_checks():
+    client = FakeJev([
+        _Response("none", connect_button=0.1),
+        _Response("none"),
+    ])
+    seen = []
+
+    async def rewrite(draft, feedback):
+        seen.append(feedback)
+        return "Got it. What's still open is your email."
+
+    result = _run(review_draft(
+        client,
+        draft="Can you tap Connect Gmail?",
+        history=[{"role": "user", "text": "Pat at gmail dot com"}],
+        profile=Profile(user_name="Pat", help_with="inbox"),
+        channel="text",
+        rewrite=rewrite,
+    ))
+    assert "connect_button" in client.calls[0]["questions"]
+    assert "next_info" in client.calls[0]["questions"]
+    assert "no address is stored" in "\n".join(seen[0])
+    assert len(client.calls) == 2
+    assert result.rewrote is True
+
+
 def test_ending_the_call_is_one_noul_on_the_spoken_line():
     client = FakeJev([_Response("none", ending_call=0.1)])
     ended = _run(ending_call(

@@ -9,7 +9,7 @@ from fastapi import WebSocketDisconnect
 
 from app import text_agent
 from app.jev_gate import ending_call
-from app.profile import collected, missing_fields, pending_gmail, voice_instructions
+from app.profile import collected, missing_fields, pending_gmail, real_address, stored, voice_instructions
 from app.settings import get_settings
 
 _log = logging.getLogger(__name__)
@@ -115,7 +115,7 @@ def follow_up(profile) -> str:
     else:
         ask = "Ask their name, and say you want to know who you are helping."
     return (
-        f"Already stored: {json.dumps(collected(profile))}. "
+        f"Already stored: {json.dumps(stored(profile))}. "
         f"Still open: {', '.join(sorted(missing))}. "
         f"Ask only for {fact}. {ask} One sentence. Then stop and listen."
     )
@@ -135,6 +135,19 @@ def ended_note(profile) -> str:
     )
 
 
+def heard_email_note(profile) -> str:
+    address = real_address(profile.gmail) or "their email"
+    missing = sorted(missing_fields(profile, "voice"))
+    if not missing:
+        return GOODBYE
+    fact = next(name for name in ("user_name", "gmail", "help_with") if name in missing)
+    return (
+        f"Their email {address} is stored. Do not ask for the email address again. "
+        f"Still open: {', '.join(missing)}. Ask only for {fact}, and say why it helps. "
+        "One sentence. Then stop and listen."
+    )
+
+
 def _greet(profile, continuing: bool) -> str:
     if not continuing:
         return GREET
@@ -143,8 +156,9 @@ def _greet(profile, continuing: bool) -> str:
         "The call just connected. Continue the conversation out loud. "
         "If you just said you were calling, greet them as the call picking up. "
         "Do not start over and do not say you will call them. "
+        f"Already stored, do not ask again: {json.dumps(stored(profile))}. "
         f"Still open on this call: {open_fields}. "
-        "Say why that fact helps, then ask for only one open fact, never a nickname. "
+        "Ask only for a fact in still open, never a nickname, and say why it helps. "
         "If nothing is open, ask for nothing. Then pause and listen."
     )
 
@@ -244,6 +258,7 @@ async def _pump(websocket, session, upstream, spoken: list[dict], end_note: dict
     goodbye_at: float | None = None
     heard_goodbye = False
     nudge = False
+    email_saved = False
 
     async def send_upstream(payload: dict) -> None:
         await upstream.send(json.dumps(payload))
@@ -259,7 +274,7 @@ async def _pump(websocket, session, upstream, spoken: list[dict], end_note: dict
             return
 
     async def remember_user(text: str) -> None:
-        nonlocal should_goodbye, nudge
+        nonlocal should_goodbye, nudge, email_saved
         spoken = text.strip()
         if not spoken:
             return
@@ -267,6 +282,7 @@ async def _pump(websocket, session, upstream, spoken: list[dict], end_note: dict
         pending = assistant.transcript.strip() or last_assistant.strip()
         if pending and (not history or history[-1].get("text") != pending):
             history.append({"role": "assistant", "text": pending})
+        had_email = real_address(session.profile.gmail) is not None
         await text_agent.file_spoken(session.profile, spoken, history)
         voice_history.append({"role": "user", "text": spoken})
         nudge = False
@@ -279,6 +295,22 @@ async def _pump(websocket, session, upstream, spoken: list[dict], end_note: dict
             "pending_gmail": pending_gmail(session.profile),
             "graduated": session.profile.graduated,
         })
+        if not had_email and real_address(session.profile.gmail) and missing_fields(session.profile, "voice"):
+            email_saved = True
+            nudge = False
+
+    async def say_email_saved() -> None:
+        nonlocal email_saved
+        if not email_saved or goodbye_at is not None:
+            return
+        email_saved = False
+        try:
+            await send_upstream(_instruction_event(
+                heard_email_note(session.profile),
+                f"event_{next(event_ids)}",
+            ))
+        except Exception:
+            return
 
     async def say_goodbye() -> None:
         nonlocal should_goodbye, goodbye_at
@@ -363,9 +395,10 @@ async def _pump(websocket, session, upstream, spoken: list[dict], end_note: dict
                 return
 
     async def close_segments() -> None:
-        nonlocal caller, user_at, last_assistant, heard_goodbye, nudge
+        nonlocal caller, user_at, last_assistant, heard_goodbye, nudge, email_saved
         quiet_since: float | None = None
         nudge_since: float | None = None
+        email_since: float | None = None
         while not stop.is_set():
             await asyncio.sleep(0.05)
             now = time.monotonic()
@@ -384,12 +417,22 @@ async def _pump(websocket, session, upstream, spoken: list[dict], end_note: dict
                 nudge_since = None
                 if await call_is_ending(text, voice_history[:-1], session.profile) or heard_goodbye:
                     nudge = False
+                    email_saved = False
                     end_note["text"] = ended_note(session.profile)
                     await close_upstream()
                     return
                 await say_goodbye()
-                still_open = bool(missing_fields(session.profile, "voice"))
-                nudge = still_open and "?" not in text and goodbye_at is None
+                if email_saved and goodbye_at is None:
+                    nudge = False
+                    await say_email_saved()
+                else:
+                    still_open = bool(missing_fields(session.profile, "voice"))
+                    nudge = still_open and "?" not in text and goodbye_at is None
+            elif email_saved and not assistant.transcript and goodbye_at is None:
+                email_since = email_since or now
+                if now - email_since >= 0.8:
+                    email_since = None
+                    await say_email_saved()
             elif should_goodbye and not assistant.transcript and goodbye_at is None:
                 quiet_since = quiet_since or now
                 if now - quiet_since >= 0.8:
@@ -410,6 +453,7 @@ async def _pump(websocket, session, upstream, spoken: list[dict], end_note: dict
                 quiet_since = None
                 if assistant.transcript:
                     nudge_since = None
+                    email_since = None
             if goodbye_at is not None and not assistant.transcript and time.monotonic() - goodbye_at >= 8:
                 await close_upstream()
                 return

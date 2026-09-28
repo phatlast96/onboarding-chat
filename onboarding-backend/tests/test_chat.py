@@ -313,6 +313,32 @@ def test_a_no_after_the_ask_does_not_ring():
     assert session.call_asked is False
 
 
+def test_a_hangup_stores_the_email_slot_after_jev_asks_for_it(monkeypatch):
+    from app.store import create_session
+
+    drafts = iter([
+        ("Can you tap Connect Gmail for Pat@gmail.com?", {"gmail": None}),
+        ("Can you tap Connect Gmail for Pat@gmail.com?", {"gmail": "Pat@gmail.com"}),
+    ])
+
+    async def draft_reply(openai, history, profile, feedback):
+        text, slots = next(drafts)
+        return text, slots, False
+
+    monkeypatch.setattr(text_agent, "draft_reply", draft_reply)
+    session = create_session()
+    session.had_call = True
+    session.messages.append({"role": "user", "text": "Pat at gmail dot com", "channel": "call"})
+    text_agent.jev_client = _Jev([
+        _Response("none", connect_button=0.1),
+        _Response("none"),
+    ])
+    asyncio.run(run_turn(session, None, "The user hung up the phone call."))
+    assert session.profile.gmail == "Pat@gmail.com"
+    assert session.profile.gmail_connected is False
+    assert pending_gmail(session.profile) == "Pat@gmail.com"
+
+
 def test_a_typed_email_asks_to_connect():
     from app.store import create_session
 

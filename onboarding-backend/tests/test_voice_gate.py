@@ -1,6 +1,14 @@
 import asyncio
 
-from app.live_bridge import HANGUP_NOTE, SegmentBuffer, _prior_input, ended_note, finish_call, follow_up
+from app.live_bridge import (
+    HANGUP_NOTE,
+    SegmentBuffer,
+    _prior_input,
+    ended_note,
+    finish_call,
+    follow_up,
+    heard_email_note,
+)
 from app.profile import Profile, missing_fields
 from app.store import create_session, sessions
 
@@ -103,6 +111,15 @@ def test_an_ended_call_names_what_is_still_open():
     assert "ended the call" in note
     assert "gmail" in note
     assert "help_with" not in note.split("Still open:", 1)[1].split(".", 1)[0]
+
+
+def test_a_stored_email_is_not_asked_for_again():
+    profile = Profile(gmail="fatatchima@gmail.com", help_with="Making cake")
+    note = follow_up(profile)
+    assert "Ask only for user_name" in note
+    assert "fatatchima@gmail.com" in note
+    assert "Do not ask for the email address again" in heard_email_note(profile)
+    assert "Ask only for user_name" in heard_email_note(profile)
 
 
 def test_a_follow_up_asks_for_the_open_email_instead_of_the_help_menu():

@@ -8,11 +8,11 @@ from app.profile import (
     TEXT_INSTRUCTIONS,
     TURN_SCHEMA,
     Profile,
-    collected,
     connect_ask,
     missing_fields,
     pending_gmail,
     real_address,
+    stored,
 )
 from app.store import Session
 
@@ -39,6 +39,7 @@ EXTRACT_INSTRUCTIONS = (
     "A bare name follows the question that was just asked. "
     "If they state what to call them, that is user_name even when the question was about something else. "
     "The name inside an email address is not their name. "
+    "If there is no new user message and the conversation already includes a full email that is not stored, set gmail to that address. "
     "gmail is a full email address, written as name@domain. "
     "'phat at gmail dot com' is phat@gmail.com. "
     "'fatsachi dot com' and '@gmail.com' are not addresses, so leave gmail null. "
@@ -154,6 +155,15 @@ def _second_reply(session: Session, note: str | None) -> bool:
     return _assistant_replies(session) == 1
 
 
+def _remember_address(profile: Profile, data: dict) -> None:
+    if profile.gmail_connected or real_address(profile.gmail):
+        return
+    email = _fresh_gmail(profile, data)
+    if email:
+        profile.gmail = email
+        profile.declined.discard("gmail")
+
+
 def _fresh_gmail(profile: Profile, data: dict) -> str | None:
     if profile.gmail_connected:
         return None
@@ -187,7 +197,7 @@ async def draft_reply(openai, history: list[dict], profile: Profile, feedback: l
         f"{CHECKS}\n"
         "message is the reply they will read.\n"
         f"{EXTRACT_INSTRUCTIONS}\n"
-        f"Profile: {json.dumps(collected(profile))}\n"
+        f"Profile: {json.dumps(stored(profile))}\n"
         f"Connect Gmail button: {waiting}\n"
         f"Still open: {open_fields}"
     )
@@ -313,8 +323,13 @@ async def run_turn(session: Session, user_text: str | None, note: str | None) ->
             session.ringing = True
             session.last_jev = {"failed": [], "rewrote": False}
         else:
+            _remember_address(session.profile, slots)
+
             async def rewrite(_draft: str, feedback: list[str]) -> str:
-                revised, _ignored, _ring = await draft_reply(openai_client, history, session.profile, feedback)
+                revised, revised_slots, _ring = await draft_reply(
+                    openai_client, history, session.profile, feedback
+                )
+                _remember_address(session.profile, revised_slots)
                 return revised
 
             result = await review_draft(
@@ -332,6 +347,8 @@ async def run_turn(session: Session, user_text: str | None, note: str | None) ->
                 session.ringing = False
         if user_text is not None:
             _merge(session.profile, slots)
+        else:
+            _remember_address(session.profile, slots)
         session.messages.append({"role": "assistant", "text": text, "channel": "text"})
         return text
     except Exception:
