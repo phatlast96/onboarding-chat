@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+openai
+typesafe-sdk>=0.7.2,<0.8
+pytest
+httpx
